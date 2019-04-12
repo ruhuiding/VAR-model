@@ -1,0 +1,281 @@
+---
+title: "ECN430 Term Paper"
+author: "Group1"
+date: ""
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, eval=TRUE, echo=FALSE, warning=FALSE, error=FALSE}
+rm(list = ls())
+library(dplyr)
+library(ggplot2)
+library(tseries)
+library(forecast)
+library(vars)
+library(AER)
+library(systemfit)
+library(gmm)
+library(readxl)
+library(urca)
+library(ggpubr)
+```
+
+```{r, eval=TRUE, echo=FALSE, warning=FALSE, error=FALSE}
+Sys.setlocale('LC_ALL','C')
+# Quarterly Growth Rate of Real GDP, change over same quarter, previous year
+gdp <- read.csv("GDP.csv", sep = ",", header = F)
+gdp <- gdp[-1,]
+gdp[,9] <- as.numeric(as.character(gdp[,9]))
+gdp <- ts(gdp[,9], start = c(1969,1), frequency = 4)
+
+# CPI of All Items
+# Percentage Change on the Same Period of the Previous Year
+cpi <- read.csv("CPI.csv", sep = ",", header = F)
+cpi <- cpi[-1,]
+cpi[,9] <- as.numeric(as.character(cpi[,9]))
+cpi <- ts(cpi[,9], start = c(1969,1), frequency = 4)
+
+# Real Housing Price (2015=100): Quarterly
+hp <- read.csv("Housing Price.csv", sep = ",", header = F)
+hp <- hp[-1,]
+hp[,7] <- as.numeric(as.character(hp[,7]))
+hp <- ts(hp[,7], start = c(1986,1), frequency = 4)
+
+# Long-term Interest Rate (Use long-term government bond rate) s.a
+ir <- read_excel("government bond.xlsx",skip = 5)
+ir <- ts(ir[,2], start = c(1982,3), frequency = 4)
+
+
+# Tax Revenue (Percentage of GDP)
+# 4100 Recurrent taxes on immovable property
+# OECD: Public Sector, taxation and market regulation
+# revenue statistics
+# https://stats.oecd.org/#
+tr <- read_excel("quarterly tax percentage.xlsx",skip = 1)
+tr <- tr[-1,]
+tr <- ts(tr[,2], start = c(1972,1), frequency = 4)
+
+ytr <- read.csv("annual tax.csv", sep = ",", header = F)
+ytr <- as.numeric(as.character(ytr[-1,13]))
+ytr <-ts(ytr,start = 1972, frequency = 1)
+autoplot(window(ytr,start=1986))+ xlab("Time") + ylab("Percentage") + 
+  ggtitle("Tax revenue percentage of GDP")
+
+
+hp <- log(hp)
+ir <- log(ir)
+tr <- log(tr)
+```
+
+Statistic Summary
+```{r, eval=TRUE, echo=FALSE, warning=FALSE, error=FALSE}
+# GDP Growth Rate
+ggtsdisplay(gdp)
+summary(ur.df(gdp,type="trend",selectlags = "AIC")) #stationary
+
+# CPI
+ggtsdisplay(cpi)
+summary(ur.df(cpi,type="trend",selectlags = "AIC")) #stationary
+
+# Housing Price
+autoplot(hp)+ xlab("Time") + ylab("Percentage") + 
+  ggtitle("House Price Index")
+ggtsdisplay(hp)
+summary(ur.df(hp,type="trend",selectlags = "AIC")) # non-stationary
+
+# Long-Term Interest Rate
+ggtsdisplay(ir)
+summary(ur.df(ir,type="trend",selectlags = "AIC")) #non-stationary
+
+# Tax revenue percentage of GDP
+ggtsdisplay(tr)
+summary(ur.df(tr,type="trend",selectlags = "AIC")) #stationary (5%)
+
+```
+
+Make ur and hp stationary
+```{r, eval=TRUE, echo=FALSE, warning=FALSE, error=FALSE}
+# make fourth difference to hp series (yoy growth rate)
+sdhp <- diff(hp, lag=4)
+autoplot(sdhp)
+summary(ur.df(sdhp,type="trend",selectlags = "AIC")) #stationary(5%)
+
+# make fourth difference to ur series (yoy growth rate)
+sdir <- diff(ir, lag=4)
+summary(ur.df(sdir,type="trend",selectlags = "AIC")) #stationary
+
+# make fourth difference to tr series (yoy growth rate)
+sdtr <- diff(tr, lag=4)
+autoplot(sdtr)
+summary(ur.df(sdtr,type="trend",selectlags = "AIC")) #stationary
+
+```
+take subsets
+```{r, eval=TRUE, echo=FALSE, warning=FALSE, error=FALSE}
+sdhp <- window(sdhp,start= c(1987,1),end = c(2018,4))
+gdp <- window(gdp,start= c(1987,1),end = c(2018,4))
+cpi <- window(cpi,start= c(1987,1),end = c(2018,4))
+sdir <- window(sdir,start= c(1987,1),end = c(2018,4))
+sdtr <- window(sdtr,start= c(1987,1),end = c(2018,4))
+```
+
+dummy
+
+```{r, eval=TRUE, echo=FALSE, warning=FALSE, error=FALSE}
+d <- rep(0,n=length(hp))
+pre91 <- length(window(hp, end=c(1990,4)))
+d[1:pre91] <- 0
+d[(pre91+1):length(hp)] <- 1
+d <-as.factor(as.character(d,
+                             levels = c(0,1), 
+                             labels = c("pre","post")))
+
+d2 <- rep(0,n=length(hp))
+pre06 <- length(window(hp, end=c(2005,4)))
+d2[1:pre06] <- 0
+d2[(pre06+1):length(hp)] <- 1
+d2 <-as.factor(as.character(d2,
+                             levels = c(0,1), 
+                             labels = c("pre","post")))
+
+
+t<-seq(1:length(hp))
+model1 <- lm(hp~t)
+summary(model1)
+
+# chow test
+library(strucchange)
+sctest(hp~t, type = "Chow", point = pre91)
+sctest(hp~t, type = "Chow", point = pre06)
+
+#Parallel Regression where only the intercepts in the two regressions are different but the slopes are the same
+model2<-lm(hp~t+d)
+summary(model2)#significant influence on intercept
+plot1 <- ggplot(mapping=aes(x=t, y=hp, color=d)) + 
+  geom_point(colour="black",size=0.1) +
+  geom_line(mapping=aes(y=model2$fitted.values),size=1) +
+  ggtitle("Parallel Regression (pre91)")
+
+model22<-lm(hp~t+d2)
+summary(model22)#significant influence on intercept
+plot2 <- ggplot(mapping=aes(x=t, y=hp, color=d2)) + 
+  geom_point(colour="black",size=0.1) +
+  geom_line(mapping=aes(y=model22$fitted.values),size=1) +
+  ggtitle("Parallel Regression (pre06)")
+
+
+#Concurrent Regression where the intercepts in the two regressions are the same, but the slopes are different
+td <- t*as.numeric(as.character(d))
+model3<-lm(hp~t+td)
+summary(model3)
+plot3 <- ggplot(mapping=aes(x=t, y=hp, color=d)) + 
+  geom_point(colour="black",size=0.1) +
+  geom_line(mapping=aes(y=model3$fitted.values),size=1) +
+  ggtitle("Concurrent Regression (pre91)")
+
+td2 <- t*as.numeric(as.character(d2))
+model32<-lm(hp~t+td2)
+summary(model32)
+plot4 <- ggplot(mapping=aes(x=t, y=hp, color=d2)) + 
+  geom_point(colour="black",size=0.1) +
+  geom_line(mapping=aes(y=model32$fitted.values),size=1) +
+  ggtitle("Concurrent Regression (pre06)")
+
+
+#Dis-similar Regression (both the intercepts and slopes are different)
+model4<-lm(hp~t+td+d)
+summary(model4)
+plot5 <- ggplot(mapping=aes(x=t, y=hp, color=d)) + 
+  geom_point(colour="black",size=0.1) +
+  geom_line(mapping=aes(y=model4$fitted.values),size=1) +
+  ggtitle("Dis-similar Regression (pre91)")
+
+model42<-lm(hp~t+td2+d2)
+summary(model42)
+plot6 <- ggplot(mapping=aes(x=t, y=hp, color=d2)) + 
+  geom_point(colour="black",size=0.1) +
+  geom_line(mapping=aes(y=model42$fitted.values),size=1) +
+  ggtitle("Dis-similar Regression (pre06)")
+
+
+ggarrange(plot1,plot2,plot3,plot4,plot5,plot6,nrow=3,ncol = 2)
+```
+
+Decide the lag
+```{r}
+#Dummies
+d91 <- rep(0,n=length(sdhp))
+p91 <- length(window(sdhp, end=c(1990,4)))
+d91[1:p91] <- 0
+d91[(p91+1):length(sdhp)] <- 1
+
+d06 <- rep(0,n=length(sdhp))
+p06 <- length(window(sdhp, end=c(2005,4)))
+d06[1:p06] <- 0
+d06[(p06+1):length(sdhp)] <- 1
+
+td91 <- ts(d91,start= c(1987,1),frequency = 4)
+td06 <- ts(d06,start= c(1987,1),frequency = 4)
+
+# Lag selection with dummies as exogenous
+y <- cbind(sdtr,sdir,gdp,cpi,sdhp)
+VARselect(y,exogen =cbind(td91,td06))
+
+```
+
+LR test: with dummies as exogenous
+```{r}
+var10 <- VAR(y, lag.max = 10,exogen = cbind(td91,td06))
+var2 <- VAR(y, lag.max = 2,exogen = cbind(td91,td06))
+logLik(var10)  # unrestricted model
+logLik(var2)  # restricted model
+p10 <- length(var10$varresult$y.sdhp$coefficients)+
+  length(var10$varresult$y.gdp$coefficients)+
+  length(var10$varresult$y.cpi$coefficients)+
+  length(var10$varresult$y.sdurp$coefficients)+
+  length(var10$varresult$y.sdir$coefficients)+
+  length(var10$varresult$td91$coefficients)+
+  length(var10$varresult$td06$coefficients)
+p2 <- length(var2$varresult$y.sdhp$coefficients)+
+  length(var2$varresult$y.gdp$coefficients)+
+  length(var2$varresult$y.cpi$coefficients)+
+  length(var2$varresult$y.sdurp$coefficients)+
+  length(var2$varresult$y.sdir$coefficients)+
+  length(var2$varresult$td91$coefficients)+
+  length(var2$varresult$td06$coefficients)
+df <- p10-p2
+teststat<- 2*(as.numeric(logLik(var10))-as.numeric(logLik(var2)))
+pchisq(teststat,df=df,lower.tail=FALSE)  # 0
+# H0: Restricted model is statistically better than unrestricted model
+# Do not reject the null hypothesis (because LR is extremely small and close to 0)
+# Restricted model is selected by the LR test (2-lag model is better)
+
+```
+
+Fit a model
+```{r, eval=TRUE, echo=FALSE, warning=FALSE, error=FALSE}
+options("scipen"=100, "digits"=4)
+var_exo <- VAR(y, lag.max = 2, exogen =cbind(td91,td06))
+summary(var_exo)
+
+fevd(var_exo,n.ahead=8)
+
+irf1 <- irf(var_exo, "sdtr", "sdhp", n.ahead = 48)
+irf2 <- irf(var_exo, "sdir", "sdhp", n.ahead = 48)
+irf3 <- irf(var_exo, "gdp", "sdhp", n.ahead = 48)
+irf4 <- irf(var_exo, "cpi", "sdhp", n.ahead = 48)
+par(mfrow=c(2,2))
+plot(irf1)
+plot(irf2)
+plot(irf3)
+plot(irf4)
+```
+
+
+
+
+
